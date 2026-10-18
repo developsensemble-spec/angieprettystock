@@ -225,28 +225,82 @@ export async function updateParcelAction(formData: FormData) {
 }
 
 export async function createDispatchSheetAction(formData: FormData) {
-  const actor = await requireRoles([Role.ADMIN, Role.MANAGER, Role.DISPATCH_TANA, Role.DISPATCH_PROVINCE]);
-  const parcelIds = [...new Set(formData.getAll("parcelId").map(v => String(v)).filter(Boolean))];
+  const actor = await requireRoles([
+    Role.ADMIN,
+    Role.MANAGER,
+    Role.DISPATCH_TANA,
+    Role.DISPATCH_PROVINCE,
+  ]);
+
+  const parcelIds = Array.from(
+    new Set(formData.getAll("parcelId").map((value) => String(value)).filter(Boolean))
+  );
   const axis = z.string().min(2).max(120).parse(formData.get("axis"));
   const driverName = z.string().min(2).max(120).parse(formData.get("driverName"));
-  if (!parcelIds.length) throw new Error("Sélectionnez au moins un colis sorti du magasin.");
-  const sheet = await prisma.$transaction(async tx => {
-    const parcels = await tx.parcel.findMany({ where: { id: { in: parcelIds } }, include: { dispatchItems: true } });
-    if (parcels.length !== parcelIds.length) throw new Error("Un colis sélectionné est introuvable.");
-    for (const parcel of parcels) {
-      if (!parcel.stockIssuedAt) throw new Error("Seuls les colis dont la sortie magasin est enregistrée peuvent être assemblés.");
-      if ([ParcelStatus.DISPATCHED, ParcelStatus.IN_TRANSIT, ParcelStatus.DELIVERED].includes(parcel.status)) throw new Error("Un colis déjà expédié ne peut pas être ajouté à une nouvelle fiche.");
-      const existing = await tx.dispatchSheetItem.findUnique({ where: { parcelId: parcel.id } });
-      if (existing) throw new Error("Un colis sélectionné figure déjà dans l'historique d'assemblage. Consultez l'historique avant de continuer.");
-      if (actor.role === Role.DISPATCH_TANA && parcel.destination !== Destination.TANA) throw new Error("Ce compte ne peut assembler que le circuit Tana.");
-      if (actor.role === Role.DISPATCH_PROVINCE && parcel.destination !== Destination.PROVINCE) throw new Error("Ce compte ne peut assembler que le circuit Province.");
+
+  if (parcelIds.length === 0) {
+    throw new Error("Sélectionnez au moins un colis sorti du magasin.");
+  }
+
+  const sheet = await prisma.$transaction(async (tx) => {
+    const parcels = await tx.parcel.findMany({
+      where: { id: { in: parcelIds } },
+      include: { dispatchItems: true },
+    });
+
+    if (parcels.length !== parcelIds.length) {
+      throw new Error("Un colis sélectionné est introuvable.");
     }
+
+    for (const parcel of parcels) {
+      if (!parcel.stockIssuedAt) {
+        throw new Error("Seuls les colis dont la sortie magasin est enregistrée peuvent être assemblés.");
+      }
+      if (
+        [ParcelStatus.DISPATCHED, ParcelStatus.IN_TRANSIT, ParcelStatus.DELIVERED].includes(parcel.status)
+      ) {
+        throw new Error("Un colis déjà expédié ne peut pas être ajouté à une nouvelle fiche.");
+      }
+
+      const existing = await tx.dispatchSheetItem.findUnique({
+        where: { parcelId: parcel.id },
+      });
+      if (existing) {
+        throw new Error("Un colis sélectionné figure déjà dans l'historique d'assemblage. Consultez l'historique avant de continuer.");
+      }
+      if (actor.role === Role.DISPATCH_TANA && parcel.destination !== Destination.TANA) {
+        throw new Error("Ce compte ne peut assembler que le circuit Tana.");
+      }
+      if (actor.role === Role.DISPATCH_PROVINCE && parcel.destination !== Destination.PROVINCE) {
+        throw new Error("Ce compte ne peut assembler que le circuit Province.");
+      }
+    }
+
     const count = await tx.dispatchSheet.count();
     const sheetNumber = `AP-LIV-${new Date().getFullYear()}-${String(count + 1).padStart(5, "0")}`;
-    return tx.dispatchSheet.create({ data: { sheetNumber, axis, driverName, createdById: actor.id, items: { create: parcelIds.map(parcelId => ({ parcelId })) } } });
+    return tx.dispatchSheet.create({
+      data: {
+        sheetNumber,
+        axis,
+        driverName,
+        createdById: actor.id,
+        items: { create: parcelIds.map((parcelId) => ({ parcelId })) },
+      },
+    });
   });
-  await prisma.auditLog.create({ data: { userId: actor.id, action: "CREATE_DISPATCH_SHEET", entity: "DispatchSheet", entityId: sheet.id, details: { axis, driverName, parcelIds } } });
-  revalidatePath("/dispatch"); revalidatePath("/dispatch/history");
+
+  await prisma.auditLog.create({
+    data: {
+      userId: actor.id,
+      action: "CREATE_DISPATCH_SHEET",
+      entity: "DispatchSheet",
+      entityId: sheet.id,
+      details: { axis, driverName, parcelIds },
+    },
+  });
+
+  revalidatePath("/dispatch");
+  revalidatePath("/dispatch/history");
   redirect(`/dispatch/history/${sheet.id}`);
 }
 export async function updateFeedbackAction(formData: FormData) {
